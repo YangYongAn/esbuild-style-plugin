@@ -2,7 +2,7 @@ import { createHash } from 'crypto'
 import path from 'path'
 import postcss, { AcceptedPlugin, ProcessOptions } from 'postcss'
 import cssModules from 'postcss-modules'
-import { OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, PluginBuild } from 'esbuild'
+import { Loader, OnLoadArgs, OnLoadResult, OnResolveArgs, OnResolveResult, PluginBuild } from 'esbuild'
 
 import CssModulesOptions from './postcssModulesOptions'
 import './modules' // keep this import for enabling modules types declaration ex: import styles from 'styles.module.sass'
@@ -19,12 +19,16 @@ interface PluginOptions {
   postcss?: PostCSS
   postcssConfigFile?: string | boolean
   renderOptions?: RenderOptions
+  onEvent?: (event: string, data: any) => void
 }
 
 const LOAD_TEMP_NAMESPACE = 'temp_stylePlugin'
 const LOAD_STYLE_NAMESPACE = 'stylePlugin'
 const SKIP_RESOLVE = 'esbuild-style-plugin-skipResolve'
 const styleFilter = /.\.(css|sass|scss|less|styl)$/
+
+let onEvent: (event: string, data: any) => void = () => {
+}
 
 const handleCSSModules = (mapping: { data: any }, cssModulesOptions: CssModulesOptions) => {
   const _getJSON = cssModulesOptions.getJSON
@@ -41,11 +45,14 @@ const handleCSSModules = (mapping: { data: any }, cssModulesOptions: CssModulesO
 const onTempStyleResolve = async (build: PluginBuild, args: OnResolveArgs): Promise<OnResolveResult> => {
   const { importer, pluginData, resolveDir } = args
 
-  return {
+  const result = {
     path: path.relative(build.initialOptions.absWorkingDir || '', importer),
     namespace: LOAD_TEMP_NAMESPACE,
     pluginData: { contents: pluginData, resolveDir }
   }
+
+  onEvent('tempResolve', { args, result })
+  return result
 }
 
 const onStyleResolve = async (build: PluginBuild, args: OnResolveArgs): Promise<OnResolveResult> => {
@@ -63,21 +70,27 @@ const onStyleResolve = async (build: PluginBuild, args: OnResolveArgs): Promise<
   // Check for pre compiled JS files like file.css.js
   if (!styleFilter.test(fullPath)) return
 
-  return {
+  const ret = {
     path: fullPath,
     namespace: LOAD_STYLE_NAMESPACE,
     watchFiles: [fullPath]
   }
+
+  onEvent('styleResolve', { args, result:ret })
+  return ret
 }
 
 const onTempLoad = async (args: OnLoadArgs): Promise<OnLoadResult> => {
   const { pluginData } = args
 
-  return {
+  const result = {
     resolveDir: pluginData.resolveDir,
     contents: pluginData.contents,
-    loader: 'css'
+    loader: 'css' as Loader
   }
+
+  onEvent('tempLoad', { args, result })
+  return result
 }
 
 const onStyleLoad = (options: PluginOptions) => async (args: OnLoadArgs): Promise<OnLoadResult> => {
@@ -120,12 +133,14 @@ const onStyleLoad = (options: PluginOptions) => async (args: OnLoadArgs): Promis
     contents += `import ${JSON.stringify('ni:sha-256;' + createHash('sha256').update(css).digest('base64url'))};`
   }
 
-  return {
+  const result = {
     watchFiles,
     resolveDir: path.dirname(args.path), // Keep resolveDir for onTempLoad anything resolve inside temp file must be resolve using source dir
     contents: contents,
     pluginData: css
   }
+  onEvent('styleLoad', { args, result })
+  return result
 }
 
 const stylePlugin = (options: PluginOptions = {}) => ({
@@ -135,6 +150,8 @@ const stylePlugin = (options: PluginOptions = {}) => ({
       console.log(`Using postcss config file.`)
       options.postcss = await importPostcssConfigFile(options.postcssConfigFile)
     }
+
+    onEvent = options.onEvent || onEvent
 
     // Resolve all css or other style here
     build.onResolve({ filter: styleFilter }, onStyleResolve.bind(null, build))
